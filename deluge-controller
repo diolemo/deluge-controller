@@ -1,0 +1,260 @@
+#!/usr/bin/php
+<?php
+
+// config file must be a valid PHP file that 
+// returns an array of configuration options
+$usage = 'usage: deluge-controller <config-file>';
+
+function console($message)
+{
+	echo $message;
+	echo PHP_EOL;
+	flush();
+}
+
+function load_config($argv)
+{
+	if (!isset($argv[1])) return false;
+	if (!is_file($argv[1])) return false;
+	$config = parse_ini_file($argv[1], true);
+	return $config;
+}
+
+function check_config(&$config)
+{
+	$config['defines'] = array();
+
+	if (!isset($config['server']))
+	{
+		console('missing option: server');
+		return false;
+	}
+
+	if (!isset($config['server']['host']))
+	{
+		console('missing option: server[host]');
+		return false;
+	}
+
+	if (!isset($config['server']['port']))
+	{
+		console('missing option: server[port]');
+		return false;
+	}
+
+	if (isset($config['define']))
+	{
+		console('invalid definition');
+		console('required format: [define name]');
+		return false;
+	}
+
+	foreach ($config as $k => $v)
+	{
+		if (preg_match('#^define (.+)$#', $k, $m))
+		{
+			$config['defines'][$m[1]] = $v;
+			unset($config[$k]);
+		}
+	}
+
+	return true;
+}
+
+function deluge_cmd($server, $cmd)
+{
+	$deluge_cmd = sprintf('connect %s:%s ; %s',
+		$server['host'], $server['port'], $cmd);
+	$shell_cmd = sprintf('/usr/bin/deluge-console %s 2>&1',
+		escapeshellarg($deluge_cmd));
+	$raw_res = shell_exec($shell_cmd);
+	return $raw_res;
+}
+
+function size_unit_to_multiplier($su)
+{
+	if ($su === 'B') return 1;
+	if ($su === 'KiB') return 1024;
+	if ($su === 'MiB') return 1048576;
+	if ($su === 'GiB') return 1073741824;
+	if ($su === 'TiB') return 1099511627776;
+}
+
+function time_unit_to_multiplier($tu)
+{
+	if ($tu === 's') return 1;
+	if ($tu === 'm') return 60;
+	if ($tu === 'h') return 3600;
+	if ($tu === 'd') return 86400;
+	if ($tu === 'w') return 86400 * 7;
+}
+
+function parse_time_with_unit($twu)
+{
+	if (preg_match('#^\d+$#', $twu)) return (int) $twu;
+	if (preg_match('#^(\d+)([smhdw])$#', $twu, $match))
+		return $match[1] * time_unit_to_multiplier($match[2]);
+	return 0;
+}
+
+function parse_size_with_unit($swu)
+{
+	if (preg_match('#^\d+$#', $swu)) return (int) $swu;
+	if (preg_match('#^([\d\.]+)\s*(B|KiB|MiB|GiB|TiB)$#', $swu, $match))
+		return $match[1] * size_unit_to_multiplier($match[2]);
+	return 0;
+}
+
+function parse_deluge_info($raw_res)
+{
+	$raw_res = str_replace(chr(13), null, $raw_res);
+	$raw_torrents = preg_split('#\n\s*\n#s', $raw_res);
+	$torrents = array();
+
+	foreach ($raw_torrents as $raw_torrent)
+	{
+		$torrent = new stdClass();
+		$raw_torrent = trim($raw_torrent);
+
+		if (preg_match('#^name: ([^\n]*)#im', $raw_torrent, $match))
+		{
+			$torrent->name = trim($match[1]);
+		}
+
+		if (preg_match('#^id: ([^\n]*)#im', $raw_torrent, $match))
+		{
+			$torrent->id = trim($match[1]);
+		}
+
+		$size_regex = '#^
+			size:\s
+				 ([\d\.]+)\s(B|KiB|MiB|GiB|TiB)
+				/([\d\.]+)\s(B|KiB|MiB|GiB|TiB) 
+			\sratio:\s([\d\.]+)
+			#imx';
+
+		if (preg_match($size_regex, $raw_torrent, $match))
+		{
+			$torrent->downloaded_size = (int) (((float) $match[1]) * size_unit_to_multiplier($match[2]));
+			$torrent->total_size = (int) (((float) $match[3]) * size_unit_to_multiplier($match[4]));
+			$torrent->ratio = (float) $match[5];
+		}
+
+		$state_regex = '#^
+			state:\s(seeding|paused|downloading)
+			(\sdown\sspeed:\s([\d\.]+)\s(B|KiB|MiB|GiB|TiB)/s)? 
+			(\sup\sspeed:\s([\d\.]+)\s(B|KiB|MiB|GiB|TiB)/s)?
+			(\seta:\s(\d+)([smhdw])\s(\d+)([smhdw]))?
+			#imx';
+
+		if (preg_match($state_regex, $raw_torrent, $match))
+		{
+			$torrent->state = strtolower($match[1]);
+			$torrent->down_speed = (int) (((float) @$match[3]) * size_unit_to_multiplier(@$match[4]));
+			$torrent->up_speed = (int) (((float) @$match[6]) * size_unit_to_multiplier(@$match[7]));
+			$torrent->eta = (int) @$match[9] * time_unit_to_multiplier(@$match[10])
+				+ (int) @$match[11] * time_unit_to_multiplier(@$match[12]);
+		}
+
+		$tracker_regex = '#^
+			tracker\sstatus:\s([^:\n]+)+:
+			(\sannounce\sok)?
+			#imx';
+
+		if (preg_match($tracker_regex, $raw_torrent, $match))
+		{
+			$torrent->tracker = $match[1];
+			$torrent->tracker_ok = !empty($match[2]);
+		}
+
+		$peers_regex = '#^
+			seeds:\s(\d+)\s\((\d+)\)\s
+			peers:\s(\d+)\s\((\d+)\)\s
+			availability:\s([\d\.]+)
+			#imx';
+
+		if (preg_match($peers_regex, $raw_torrent, $match))
+		{
+			$torrent->seeds_connected = (int) $match[1];
+			$torrent->seeds_from_tracker = (int) $match[2];
+			$torrent->peers_connected = (int) $match[3];
+			$torrent->peers_from_tracker = (int) $match[4];
+			$torrent->availability = (float) $match[5];
+		}
+
+		$time_regex = '#^
+			seed\stime:\s(\d+)\sdays
+				\s(\d+):(\d+):(\d+)\s
+			active:\s(\d+)\sdays
+				\s(\d+):(\d+):(\d+)
+			#imx';
+
+		if (preg_match($time_regex, $raw_torrent, $match))
+		{
+			$torrent->time_seeding = 0 
+				+ ($match[1] * 86400)
+				+ ($match[2] * 3600)
+				+ ($match[3] * 60) 
+				+ ($match[4]);
+
+			$torrent->time_active = 0 
+				+ ($match[5] * 86400)
+				+ ($match[6] * 3600)
+				+ ($match[7] * 60) 
+				+ ($match[8]);
+		}
+
+		$torrents[] = $torrent;
+	}
+
+	return $torrents;
+}
+
+if (!($config = load_config($argv))) console($usage);
+if (!check_config($config)) exit(1);
+
+$server = $config['server'];
+$defines = $config['defines'];
+
+$raw_torrents = deluge_cmd($server, 'info');
+$torrents = parse_deluge_info($raw_torrents);
+$torrents_to_pause = array();
+
+foreach ($defines as $define)
+{
+	foreach ($torrents as $k => $torrent)
+	{
+		if ($torrent->state != 'seeding')
+			continue;
+
+		if (isset($define['tracker']))
+			if ($torrent->tracker != $define['tracker'])
+				continue;
+
+		if (isset($define['time_seeding']))
+			if ($torrent->time_seeding < parse_time_with_unit($define['time_seeding']))
+				continue;
+
+		if (isset($define['time_active']))
+			if ($torrent->time_active < parse_time_with_unit($define['time_active']))
+				continue;
+
+		if (isset($define['size_min']))
+			if ($torrent->downloaded_size < parse_size_with_unit($define['size_min']))
+				continue;
+
+		if (isset($define['size_max']))
+			if ($torrent->downloaded_size > parse_size_with_unit($define['size_max']))
+				continue;
+
+		if (isset($define['ratio']))
+			if ($torrent->ratio < $define['ratio'])
+				continue;
+
+		$torrents_to_pause[] = $torrent;
+		unset($torrents[$k]);
+	}
+}
+
+foreach ($torrents_to_pause as $torrent)
+	echo deluge_cmd($server, sprintf('pause %s', $torrent->id));
