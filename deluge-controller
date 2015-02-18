@@ -135,8 +135,8 @@ function parse_deluge_info($raw_res)
 
 		if (preg_match($size_regex, $raw_torrent, $match))
 		{
-			$torrent->downloaded_size = (int) (((float) $match[1]) * size_unit_to_multiplier($match[2]));
-			$torrent->total_size = (int) (((float) $match[3]) * size_unit_to_multiplier($match[4]));
+			$torrent->size_downloaded = (int) (((float) $match[1]) * size_unit_to_multiplier($match[2]));
+			$torrent->size_total = (int) (((float) $match[3]) * size_unit_to_multiplier($match[4]));
 			$torrent->ratio = (float) $match[5];
 		}
 
@@ -150,8 +150,8 @@ function parse_deluge_info($raw_res)
 		if (preg_match($state_regex, $raw_torrent, $match))
 		{
 			$torrent->state = strtolower($match[1]);
-			$torrent->down_speed = (int) (((float) @$match[3]) * size_unit_to_multiplier(@$match[4]));
-			$torrent->up_speed = (int) (((float) @$match[6]) * size_unit_to_multiplier(@$match[7]));
+			$torrent->speed_down = (int) (((float) @$match[3]) * size_unit_to_multiplier(@$match[4]));
+			$torrent->speed_up = (int) (((float) @$match[6]) * size_unit_to_multiplier(@$match[7]));
 			$torrent->eta = (int) @$match[9] * time_unit_to_multiplier(@$match[10])
 				+ (int) @$match[11] * time_unit_to_multiplier(@$match[12]);
 		}
@@ -210,6 +210,14 @@ function parse_deluge_info($raw_res)
 	return $torrents;
 }
 
+function regex_match($value, $patterns)
+{
+	foreach ($patterns as $pattern)
+		if (preg_match($pattern, $value))
+			return true;
+	return false;
+}
+
 if (!($config = load_config($argv))) console($usage);
 if (!check_config($config)) exit(1);
 
@@ -228,7 +236,19 @@ foreach ($defines as $define)
 			continue;
 
 		if (isset($define['tracker']))
-			if ($torrent->tracker != $define['tracker'])
+			if (!in_array($torrent->tracker, (array) $define['tracker']))
+				continue;
+
+		if (isset($define['tracker_exclude']))
+			if (in_array($torrent->tracker, (array) $define['tracker_exclude']))
+				continue;
+
+		if (isset($define['name_match']))
+			if (!regex_match($torrent->name, (array) $define['name_match']))
+				continue;
+
+		if (isset($define['name_not_match']))
+			if (regex_match($torrent->name, (array) $define['name_not_match']))
 				continue;
 
 		if (isset($define['time_seeding']))
@@ -240,11 +260,11 @@ foreach ($defines as $define)
 				continue;
 
 		if (isset($define['size_min']))
-			if ($torrent->downloaded_size < parse_size_with_unit($define['size_min']))
+			if ($torrent->size_downloaded < parse_size_with_unit($define['size_min']))
 				continue;
 
 		if (isset($define['size_max']))
-			if ($torrent->downloaded_size > parse_size_with_unit($define['size_max']))
+			if ($torrent->size_downloaded > parse_size_with_unit($define['size_max']))
 				continue;
 
 		if (isset($define['ratio']))
