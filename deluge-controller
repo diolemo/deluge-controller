@@ -23,6 +23,7 @@ function load_config($argv)
 function check_config(&$config)
 {
 	$config['defines'] = array();
+	$config['extends'] = array();
 
 	if (!isset($config['server']))
 	{
@@ -42,18 +43,19 @@ function check_config(&$config)
 		return false;
 	}
 
-	if (isset($config['define']))
-	{
-		console('invalid definition');
-		console('required format: [define name]');
-		return false;
-	}
-
 	foreach ($config as $k => $v)
 	{
 		if (preg_match('#^define (.+)$#', $k, $m))
 		{
 			$config['defines'][$m[1]] = $v;
+			unset($config[$k]);
+		}
+
+		if (preg_match('#^extend (.+) (.+)$#', $k, $m))
+		{
+			if (!isset($config['extends'][$m[1]]))
+				$config['extends'][$m[1]] = array();
+			$config['extends'][$m[1]][$m[2]] = $v;
 			unset($config[$k]);
 		}
 	}
@@ -223,13 +225,35 @@ if (!check_config($config)) exit(1);
 
 $server = $config['server'];
 $defines = $config['defines'];
+$extends = $config['extends'];
 
 $raw_torrents = deluge_cmd($server, 'info');
 $torrents = parse_deluge_info($raw_torrents);
 $torrents_to_pause = array();
 
-foreach ($defines as $define)
+foreach ($defines as $name => $define)
 {
+	if (isset($extends[$name]))
+	{
+		foreach ($extends[$name] as $extend)
+		{
+			foreach ($extend as $ex_option_k => $ex_option_v)
+			{
+				if (is_array($ex_option_v))
+				{
+					if (!isset($define[$ex_option_k]))
+						  $define[$ex_option_k] = $ex_option_v;
+					else $define[$ex_option_k] = array_merge((array) 
+						$define[$ex_option_k], $ex_option_v);
+				}
+				else
+				{
+					$define[$ex_option_k] = $ex_option_v;
+				}
+			}
+		}
+	}
+
 	foreach ($torrents as $k => $torrent)
 	{
 		if ($torrent->state != 'seeding')
