@@ -22,29 +22,18 @@ function load_config($argv)
 
 function check_config(&$config)
 {
+	$config['servers'] = array();
 	$config['defines'] = array();
 	$config['extends'] = array();
 
-	if (!isset($config['server']))
-	{
-		console('missing option: server');
-		return false;
-	}
-
-	if (!isset($config['server']['host']))
-	{
-		console('missing option: server[host]');
-		return false;
-	}
-
-	if (!isset($config['server']['port']))
-	{
-		console('missing option: server[port]');
-		return false;
-	}
-
 	foreach ($config as $k => $v)
 	{
+		if (preg_match('#^server (.+)$#', $k, $m))
+		{
+			$config['servers'][$m[1]] = $v;
+			unset($config[$k]);
+		}
+
 		if (preg_match('#^define (.+)$#', $k, $m))
 		{
 			$config['defines'][$m[1]] = $v;
@@ -57,6 +46,27 @@ function check_config(&$config)
 				$config['extends'][$m[1]] = array();
 			$config['extends'][$m[1]][$m[2]] = $v;
 			unset($config[$k]);
+		}
+	}
+
+	if (!count($config['servers']))
+	{
+		console('missing option: server');
+		return false;
+	}
+
+	foreach ($config['servers'] as $server)
+	{
+		if (!isset($server['host']))
+		{
+			console('missing option: server[host]');
+			return false;
+		}
+
+		if (!isset($server['port']))
+		{
+			console('missing option: server[port]');
+			return false;
 		}
 	}
 
@@ -223,82 +233,109 @@ function regex_match($value, $patterns)
 if (!($config = load_config($argv))) console($usage);
 if (!check_config($config)) exit(1);
 
-$server = $config['server'];
+$servers = $config['servers'];
 $defines = $config['defines'];
 $extends = $config['extends'];
+$globals = $config['globals'];
 
-$raw_torrents = deluge_cmd($server, 'info');
-$torrents = parse_deluge_info($raw_torrents);
-$torrents_to_pause = array();
-
-foreach ($defines as $name => $define)
+foreach ($servers as $server_name => $server)
 {
-	if (isset($extends[$name]))
+	$raw_torrents = deluge_cmd($server, 'info');
+	$torrents = parse_deluge_info($raw_torrents);
+	$torrents_to_pause = array();
+
+	foreach ($defines as $define_name => $define)
 	{
-		foreach ($extends[$name] as $extend)
+		// global rules that apply to all definitions
+		foreach ($globals as $gl_option_k => $gl_option_v)
 		{
-			foreach ($extend as $ex_option_k => $ex_option_v)
+			if (is_array($gl_option_v))
 			{
-				if (is_array($ex_option_v))
+				if (!isset($define[$gl_option_k]))
+					  $define[$gl_option_k] = $gl_option_v;
+				else $define[$gl_option_k] = array_merge((array) 
+					$define[$gl_option_k], $gl_option_v);
+			}
+			else
+			{
+				$define[$gl_option_k] = $gl_option_v;
+			}
+		}
+
+		// extensions to a definition
+		if (isset($extends[$define_name]))
+		{
+			foreach ($extends[$define_name] as $extend)
+			{
+				foreach ($extend as $ex_option_k => $ex_option_v)
 				{
-					if (!isset($define[$ex_option_k]))
-						  $define[$ex_option_k] = $ex_option_v;
-					else $define[$ex_option_k] = array_merge((array) 
-						$define[$ex_option_k], $ex_option_v);
-				}
-				else
-				{
-					$define[$ex_option_k] = $ex_option_v;
+					if (is_array($ex_option_v))
+					{
+						if (!isset($define[$ex_option_k]))
+							  $define[$ex_option_k] = $ex_option_v;
+						else $define[$ex_option_k] = array_merge((array) 
+							$define[$ex_option_k], $ex_option_v);
+					}
+					else
+					{
+						$define[$ex_option_k] = $ex_option_v;
+					}
 				}
 			}
 		}
-	}
 
-	foreach ($torrents as $k => $torrent)
-	{
-		if ($torrent->state != 'seeding')
+		// define is specified for the listed server only
+		// so skip if we are not currently processing that server
+		if (isset($define['server']) && $define['server'] != $server_name)
 			continue;
 
-		if (isset($define['tracker']))
-			if (!in_array($torrent->tracker, (array) $define['tracker']))
+		foreach ($torrents as $k => $torrent)
+		{
+			if ($torrent->state != 'seeding')
 				continue;
 
-		if (isset($define['tracker_exclude']))
-			if (in_array($torrent->tracker, (array) $define['tracker_exclude']))
-				continue;
+			if (isset($define['tracker']))
+				if (!in_array($torrent->tracker, (array) $define['tracker']))
+					continue;
 
-		if (isset($define['name_match']))
-			if (!regex_match($torrent->name, (array) $define['name_match']))
-				continue;
+			if (isset($define['tracker_exclude']))
+				if (in_array($torrent->tracker, (array) $define['tracker_exclude']))
+					continue;
 
-		if (isset($define['name_not_match']))
-			if (regex_match($torrent->name, (array) $define['name_not_match']))
-				continue;
+			if (isset($define['name_match']))
+				if (!regex_match($torrent->name, (array) $define['name_match']))
+					continue;
 
-		if (isset($define['time_seeding']))
-			if ($torrent->time_seeding < parse_time_with_unit($define['time_seeding']))
-				continue;
+			if (isset($define['name_not_match']))
+				if (regex_match($torrent->name, (array) $define['name_not_match']))
+					continue;
 
-		if (isset($define['time_active']))
-			if ($torrent->time_active < parse_time_with_unit($define['time_active']))
-				continue;
+			if (isset($define['time_seeding']))
+				if ($torrent->time_seeding < parse_time_with_unit($define['time_seeding']))
+					continue;
 
-		if (isset($define['size_min']))
-			if ($torrent->size_downloaded < parse_size_with_unit($define['size_min']))
-				continue;
+			if (isset($define['time_active']))
+				if ($torrent->time_active < parse_time_with_unit($define['time_active']))
+					continue;
 
-		if (isset($define['size_max']))
-			if ($torrent->size_downloaded > parse_size_with_unit($define['size_max']))
-				continue;
+			if (isset($define['size_min']))
+				if ($torrent->size_downloaded < parse_size_with_unit($define['size_min']))
+					continue;
 
-		if (isset($define['ratio']))
-			if ($torrent->ratio < $define['ratio'])
-				continue;
+			if (isset($define['size_max']))
+				if ($torrent->size_downloaded > parse_size_with_unit($define['size_max']))
+					continue;
 
-		$torrents_to_pause[] = $torrent;
-		unset($torrents[$k]);
+			if (isset($define['ratio']))
+				if ($torrent->ratio < $define['ratio'])
+					continue;
+
+			$torrents_to_pause[] = $torrent;
+			unset($torrents[$k]);
+		}
 	}
-}
 
-foreach ($torrents_to_pause as $torrent)
-	echo deluge_cmd($server, sprintf('pause %s', $torrent->id));
+	// pause torrents that match criteria
+	foreach ($torrents_to_pause as $torrent)
+		echo deluge_cmd($server, sprintf('pause %s', $torrent->id));
+}
