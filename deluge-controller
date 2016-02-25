@@ -20,6 +20,71 @@ function load_config($argv)
 	return $config;
 }
 
+// see config.py in deluge source code
+// because this structure makes no sense!
+function extract_json_objects($str)
+{
+	$objects = array();
+	$len = strlen($str);
+	$start = strpos($str, '{');
+	if ($start === false)
+		return $objects;
+	$opens = 0;
+
+	for ($i = 0; $i < $len; $i++)
+	{
+		if ($str[$i] == '{')
+		{
+			$opens++;
+		}
+		else if ($str[$i] == '}')
+		{
+			if (--$opens == 0)
+			{
+				$substr = substr($str, $start, $i-$start+1);
+				$objects[] = json_decode($substr);
+				$start = $i+1;
+			}
+		}
+	}
+	
+	return $objects;
+}
+
+function auto_configure_server(&$server)
+{
+	if (!isset($server['config']) ||
+		 !is_dir($server['config']))
+		return;
+
+	$auth_file = sprintf('%s/auth', $server['config']);
+	$core_file = sprintf('%s/core.conf', $server['config']);
+	$auth_str = file_get_contents($auth_file);
+	$core_str = file_get_contents($core_file);
+
+	if (preg_match('#^(localclient):([^:]+):#', $auth_str, $auth_match))
+	{
+		if (!isset($server['user']) && !isset($server['pass']))
+		{
+			$server['user'] = $auth_match[1];
+			$server['pass'] = $auth_match[2];
+		}
+	}
+
+	if (!isset($server['host']) && !isset($server['port']))
+	{
+		$core_objects = extract_json_objects($core_str);
+
+		foreach ($core_objects as $core)
+		{
+			if (!empty($core->listen_interface))
+				$server['host'] = $core->listen_interface;
+			if (!empty($core->daemon_port))
+				$server['port'] = $core->daemon_port;
+		}
+	}
+}
+
 function check_config(&$config)
 {
 	$config['servers'] = array();
@@ -55,8 +120,10 @@ function check_config(&$config)
 		return false;
 	}
 
-	foreach ($config['servers'] as $server)
+	foreach ($config['servers'] as &$server)
 	{
+		auto_configure_server($server);
+
 		if (!isset($server['host']))
 		{
 			console('missing option: server[host]');
@@ -68,6 +135,11 @@ function check_config(&$config)
 			console('missing option: server[port]');
 			return false;
 		}
+
+		if (!isset($server['user']))
+			$server['user'] = null;
+		if (!isset($server['pass']))
+			$server['pass'] = null;
 	}
 
 	return true;
@@ -75,8 +147,11 @@ function check_config(&$config)
 
 function deluge_cmd($server, $cmd)
 {
-	$deluge_cmd = sprintf('connect %s:%s ; %s',
-		$server['host'], $server['port'], $cmd);
+	$deluge_cmd = sprintf('connect %s:%s %s %s ; %s',
+		$server['host'], $server['port'], 
+		$server['user'], $server['pass'], 
+		$cmd);
+
 	$shell_cmd = sprintf('/usr/bin/deluge-console %s 2>&1',
 		escapeshellarg($deluge_cmd));
 	$raw_res = shell_exec($shell_cmd);
