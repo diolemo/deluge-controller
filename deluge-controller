@@ -194,6 +194,7 @@ function parse_size_with_unit($swu)
 
 function parse_deluge_info($raw_res)
 {
+	if (!$raw_res) return array();
 	$raw_res = str_replace(chr(13), null, $raw_res);
 	$raw_torrents = preg_split('#\n\s*\n#s', $raw_res);
 	$torrents = array();
