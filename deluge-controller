@@ -360,6 +360,14 @@ foreach ($servers as $server_name => $server)
 			}
 		}
 
+		if (isset($define['free_disk_max']))
+		{
+			$free_disk_max = parse_size_with_unit($define['free_disk_max']);
+			$free_space = disk_free_space($define['free_disk_dir'] ?? '/');
+			if ($free_space > $free_disk_max)
+				continue;
+		}
+
 		// define is specified for the listed server only
 		// so skip if we are not currently processing that server
 		if (isset($define['server']) && $define['server'] != $server_name)
@@ -367,12 +375,16 @@ foreach ($servers as $server_name => $server)
 
 		foreach ($torrents as $k => $torrent)
 		{
+			if (!isset($torrent->state)) continue;
 			if ($torrent->state != 'seeding')
 				continue;
 
 			if (isset($define['tracker']))
+			{
+				if (!isset($torrent->tracker)) continue;
 				if (!in_array($torrent->tracker, (array) $define['tracker']))
 					continue;
+			}
 
 			if (isset($define['tracker_exclude']))
 				if (in_array($torrent->tracker, (array) $define['tracker_exclude']))
