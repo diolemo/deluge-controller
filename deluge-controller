@@ -89,7 +89,6 @@ function check_config(&$config)
 {
 	$config['servers'] = array();
 	$config['defines'] = array();
-	$config['extends'] = array();
 
 	foreach ($config as $k => $v)
 	{
@@ -102,14 +101,6 @@ function check_config(&$config)
 		if (preg_match('#^define (.+)$#', $k, $m))
 		{
 			$config['defines'][$m[1]] = $v;
-			unset($config[$k]);
-		}
-
-		if (preg_match('#^extend (.+) (.+)$#', $k, $m))
-		{
-			if (!isset($config['extends'][$m[1]]))
-				$config['extends'][$m[1]] = array();
-			$config['extends'][$m[1]][$m[2]] = $v;
 			unset($config[$k]);
 		}
 	}
@@ -311,7 +302,6 @@ if (!check_config($config)) exit(1);
 
 $servers = $config['servers'];
 $defines = $config['defines'];
-$extends = $config['extends'];
 $globals = $config['globals'];
 
 foreach ($servers as $server_name => $server)
@@ -332,31 +322,9 @@ foreach ($servers as $server_name => $server)
 				else $define[$gl_option_k] = array_merge((array) 
 					$define[$gl_option_k], $gl_option_v);
 			}
-			else
+			else if (!isset($define[$gl_option_k]))
 			{
 				$define[$gl_option_k] = $gl_option_v;
-			}
-		}
-
-		// extensions to a definition
-		if (isset($extends[$define_name]))
-		{
-			foreach ($extends[$define_name] as $extend)
-			{
-				foreach ($extend as $ex_option_k => $ex_option_v)
-				{
-					if (is_array($ex_option_v))
-					{
-						if (!isset($define[$ex_option_k]))
-							  $define[$ex_option_k] = $ex_option_v;
-						else $define[$ex_option_k] = array_merge((array) 
-							$define[$ex_option_k], $ex_option_v);
-					}
-					else
-					{
-						$define[$ex_option_k] = $ex_option_v;
-					}
-				}
 			}
 		}
 
